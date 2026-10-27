@@ -87,9 +87,7 @@ the built-in default.
 
 `ZCODE_RTL_PORT` must match the `--remote-debugging-port` flag
 ZCode is started with; `restart-zcode.mjs` starts the app with the
-same value automatically.
-
-Set `ZCODE_EXE` only when the
+same value automatically. Set `ZCODE_EXE` only when the
 auto-detection in `restart-zcode.mjs` fails on your machine.
 
 ## Usage

@@ -16,27 +16,77 @@
  *   - sidebar and app chrome        -> completely untouched
  *   - debounced 200 ms rescan after streaming mutations
  *
+ * Styling model: every touched element gets one data attribute and ONE
+ * stylesheet carries the rules. React wipes inline styles on re-render,
+ * which let RTL text inherit the wrong direction mid-stream; React never
+ * manages unknown data attributes or our style tag, so this layer
+ * survives app re-renders untouched.
+ *
  * The layer has a persistent switch: localStorage["zcodeRtl:enabled"]
  * ('1' by default, '0' = off). window.__zcodeRtlSetEnabled(true|false)
- * toggles it live in both directions with no page reload: enable starts the
- * layer, disable strips exactly the styles this payload set and disconnects
- * its observer. The payload is idempotent and safe to inject repeatedly.
+ * toggles it live in both directions with no page reload: enable starts
+ * the layer, disable removes the stylesheet and every data attribute.
+ * The payload is idempotent and safe to inject repeatedly.
  */
 (function zcodeRtl() {
-  // Every element and property we set, so disable can strip them without a
-  // page reload.
-  const TOUCHED = new Map();
-  function force(el, props) {
+  // One stylesheet carries every rule; touched elements only carry their
+  // kind, so a repeated pass rewrites nothing and a disable removes both.
+  const ATTR = "data-zcode-rtl";
+  const STYLE_ID = "zcode-rtl-style";
+  const RULES = [
+    '[data-zcode-rtl="rtl"]{direction:rtl!important;',
+    "text-align:right!important;unicode-bidi:embed!important}",
+    '[data-zcode-rtl="ltr"]{direction:ltr!important;',
+    "text-align:left!important;unicode-bidi:embed!important}",
+    '[data-zcode-rtl="list"]{direction:rtl!important;',
+    "text-align:right!important;unicode-bidi:embed!important;",
+    "padding-left:0!important;padding-right:1.5em!important;",
+    "margin-left:0!important;margin-right:0!important}",
+    '[data-zcode-rtl="table"]{direction:rtl!important;',
+    "text-align:right!important;unicode-bidi:embed!important;",
+    "overflow-wrap:break-word!important}",
+    '[data-zcode-rtl="ltrtable"]{direction:ltr!important;',
+    "text-align:left!important;unicode-bidi:embed!important;",
+    "overflow-wrap:break-word!important}",
+    '[data-zcode-rtl="neutral"]{direction:auto!important;',
+    "text-align:start!important;unicode-bidi:plaintext!important}",
+    '[data-zcode-rtl="pane"]{direction:ltr!important}',
+    '[data-zcode-rtl="zone"]{direction:ltr!important;',
+    "text-align:left!important}",
+    '[data-zcode-rtl="reset"]{direction:ltr!important;',
+    "text-align:left!important;unicode-bidi:normal!important}",
+    '[data-zcode-rtl="fit"]{width:100%!important;min-width:0!important;',
+    "table-layout:auto!important;white-space:normal!important}",
+    '[data-zcode-rtl="cell"]{white-space:normal!important;',
+    "overflow-wrap:anywhere!important;word-break:normal!important}",
+    '[data-zcode-rtl="row-end"]{justify-content:flex-end!important;',
+    "direction:ltr!important}",
+    '[data-zcode-rtl="row-start"]{justify-content:flex-start!important;',
+    "direction:ltr!important}",
+    '[data-zcode-rtl="pin-right"]{margin-left:auto!important;',
+    "margin-right:0!important}",
+    '[data-zcode-rtl="pin-left"]{margin-right:auto!important;',
+    "margin-left:0!important}",
+    '[data-zcode-rtl="edit-box"]{direction:ltr!important;',
+    "margin-left:auto!important;margin-right:0!important}",
+    '[data-zcode-rtl="actions"]{direction:ltr!important;',
+    "justify-content:flex-end!important;margin-left:auto!important;",
+    "margin-right:0!important;align-self:flex-end!important}",
+  ].join(" ");
+  const TOUCHED = new Set();
+
+  function ensureStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    const tag = document.createElement("style");
+    tag.id = STYLE_ID;
+    tag.textContent = RULES;
+    (document.head || document.documentElement).appendChild(tag);
+  }
+
+  function force(el, kind) {
     if (!el || el.nodeType !== 1) return;
-    let rec = TOUCHED.get(el);
-    if (!rec) {
-      rec = new Set();
-      TOUCHED.set(el, rec);
-    }
-    for (const k in props) {
-      rec.add(k);
-      el.style.setProperty(k, props[k], "important");
-    }
+    if (el.getAttribute(ATTR) !== kind) el.setAttribute(ATTR, kind);
+    TOUCHED.add(el);
   }
 
   // RTL letter detection: the Unicode blocks whose letters are written
@@ -46,41 +96,6 @@
     "[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF" +
       "\uFB50-\uFDFF\uFE70-\uFEFF]",
   );
-
-  // Forced RTL: `embed` (NOT `plaintext`) so the browser cannot re-resolve
-  // the direction from content and override our explicit rtl.
-  const RTL_FORCE = {
-    direction: "rtl",
-    "text-align": "right",
-    "unicode-bidi": "embed",
-  };
-  const RTL_LIST = {
-    direction: "rtl",
-    "text-align": "right",
-    "unicode-bidi": "embed",
-    "padding-left": "0",
-    "padding-right": "1.5em",
-    "margin-left": "0",
-    "margin-right": "0",
-  };
-  const LTR_TEXT = {
-    direction: "ltr",
-    "text-align": "left",
-    "unicode-bidi": "embed",
-  };
-  // Tables go fully RTL: first column at the right, everything right-aligned;
-  // Latin tokens stay intact as embedded LTR runs.
-  const RTL_TABLE = {
-    direction: "rtl",
-    "text-align": "right",
-    "unicode-bidi": "embed",
-    "overflow-wrap": "break-word",
-  };
-  const NEUTRAL = {
-    direction: "auto",
-    "text-align": "start",
-    "unicode-bidi": "plaintext",
-  };
 
   const MSG_SEL =
     '[class*="message" i],[class*="Message" i],' +
@@ -92,74 +107,34 @@
 
   // Sidebar and other app chrome stay completely untouched: the RTL rules
   // apply to the chat transcript only. The real workspace sidebar is the
-  // ASIDE panel with the workspace-sidebar-* width classes. A generic
-  // [class*="sidebar"] selector must NOT be used: on app 3.16.x the flex row
-  // that holds [sidebar | chat] carries an arbitrary Tailwind class
-  // whose name is built on the custom property --sidebar-task-list-divider,
-  // so a substring match would exclude the whole chat transcript.
-  const EXCLUDE_SEL =
-    '#sidebar,[id*="sidebar" i],aside,' + '[class*="workspace-sidebar" i]';
+  // ASIDE panel with the workspace-sidebar-* width classes. Detection is
+  // token-aware: a PLAIN class token mentioning "sidebar" always marks
+  // chrome, so a future rename of workspace-sidebar-* cannot let the panel
+  // get flipped. Bracketed Tailwind classes like
+  // [anchor-scope:--sidebar-task-list-divider...] on app 3.16.x also contain
+  // the word but are generated names, not real classes, and hasPlainToken
+  // skips them; a substring class match must never be used here.
   function isExcluded(el) {
-    return !!(el.closest && el.closest(EXCLUDE_SEL));
+    let n = el;
+    while (n && n.nodeType === 1 && n !== document.documentElement) {
+      const t = (n.tagName || "").toLowerCase();
+      if (t === "aside") return true;
+      if (/sidebar/i.test(n.id || "")) return true;
+      if (hasPlainToken(n, /sidebar/i)) return true;
+      n = n.parentElement;
+    }
+    return false;
   }
+
+  // Subtree check for the wrapper-repair rules below; the plain token walk
+  // would be too costly here, so the known CSS names carry this one.
+  const EXCLUDE_SEL = "aside,[id*='sidebar' i],[class*='workspace-sidebar' i]";
 
   // True when the element CONTAINS an excluded (sidebar) node. Such wrappers
   // sit above the sidebar and must never receive rtl: an rtl ancestor
   // reverses flex order and moves the app sidebar to the right edge.
   function containsExcluded(el) {
     return !!(el.querySelector && el.querySelector(EXCLUDE_SEL));
-  }
-
-  function isCode(el) {
-    const t = (el.tagName || "").toLowerCase();
-    return t === "pre" || t === "code" || /code/i.test(el.className || "");
-  }
-
-  // Tool blocks (terminal / thinking / edit) are shadcn collapsibles marked
-  // by a .tool-summary or .reasoning row. The block chrome stays LTR, but
-  // RTL prose inside the expanded body must still be RTL, so only the
-  // zone root and the marker rows are locked here. Text leaves inside the
-  // body fall through to the normal ratio rule.
-  const TOOL_MARK = '[class*="tool-summary"],[class*="reasoning"]';
-  const TOOL_ZONE = '[data-slot="collapsible"]:has(' + TOOL_MARK + ")";
-  function isToolZone(el) {
-    if (!el.closest) return false;
-    return !!el.closest(TOOL_MARK) || !!el.closest(TOOL_ZONE);
-  }
-  // One pass per process(): pin zone roots LTR/left and chrome rows hard LTR.
-  function fixToolBlocks(root) {
-    root = root || document;
-    root.querySelectorAll(TOOL_ZONE).forEach((zone) => {
-      force(zone, { direction: "ltr", "text-align": "left" });
-    });
-    root.querySelectorAll(TOOL_MARK).forEach((m) => force(m, LTR_TEXT));
-  }
-
-  // Direction is decided by ratio, not by "any RTL char": streamed
-  // thinking text is mostly English with the occasional quoted foreign
-  // phrase, and a single RTL word must not flip the whole block. Real RTL
-  // paragraphs score far above 20% RTL letters.
-  function rtlRatio(str) {
-    const letters = (str || "").replace(/\s/g, "");
-    if (!letters) return 0;
-    const hits = str.match(new RegExp(RTL_CHARS.source, "g")) || [];
-    return hits.length / letters.length;
-  }
-  function isRtlDominant(str) {
-    return RTL_CHARS.test(str) && rtlRatio(str) >= 0.2;
-  }
-
-  // True when any child is block-level, i.e. the element is a layout
-  // container, not a text leaf. Containers must not get leaf-level
-  // direction overrides.
-  function hasBlockChild(el) {
-    const kids = el.children;
-    for (let i = 0; i < kids.length; i++) {
-      const d = getComputedStyle(kids[i]).display;
-      if (d !== "inline" && d !== "contents" && d.indexOf("inline") !== 0)
-        return true;
-    }
-    return false;
   }
 
   // True when one of the element's plain class tokens matches re. Tailwind
@@ -196,6 +171,66 @@
     return null;
   }
 
+  function isCode(el) {
+    const t = (el.tagName || "").toLowerCase();
+    return t === "pre" || t === "code" || hasPlainToken(el, /code/i);
+  }
+
+  // Tool blocks (terminal / thinking / edit) are shadcn collapsibles marked
+  // by a .tool-summary or .reasoning row. The block chrome stays LTR, but
+  // RTL prose inside the expanded body must still be RTL, so only the
+  // zone root and the marker rows are locked here. Text leaves inside the
+  // body fall through to the normal ratio rule.
+  const TOOL_MARK = '[class*="tool-summary"],[class*="reasoning"]';
+  // :has() needs Chromium 105 or newer. Degrade to the marker rows when a
+  // future engine drops it, so one selector can never break the whole pass.
+  const HAS_SELECTOR =
+    typeof CSS !== "undefined" &&
+    !!CSS.supports &&
+    CSS.supports("selector(:has(a))");
+  const TOOL_ZONE = HAS_SELECTOR
+    ? '[data-slot="collapsible"]:has(' + TOOL_MARK + ")"
+    : TOOL_MARK;
+  function isToolZone(el) {
+    if (!el.closest) return false;
+    return !!el.closest(TOOL_MARK) || !!el.closest(TOOL_ZONE);
+  }
+  // One pass per process(): pin zone roots LTR/left and chrome rows hard LTR.
+  function fixToolBlocks(root) {
+    root = root || document;
+    root.querySelectorAll(TOOL_ZONE).forEach((zone) => {
+      force(zone, "zone");
+    });
+    root.querySelectorAll(TOOL_MARK).forEach((m) => force(m, "ltr"));
+  }
+
+  // Direction is decided by ratio, not by "any RTL char": streamed
+  // thinking text is mostly English with the occasional quoted foreign
+  // phrase, and a single RTL word must not flip the whole block. Real RTL
+  // paragraphs score far above 20% RTL letters.
+  function rtlRatio(str) {
+    const letters = (str || "").replace(/\s/g, "");
+    if (!letters) return 0;
+    const hits = str.match(new RegExp(RTL_CHARS.source, "g")) || [];
+    return hits.length / letters.length;
+  }
+  function isRtlDominant(str) {
+    return RTL_CHARS.test(str) && rtlRatio(str) >= 0.2;
+  }
+
+  // True when any child is block-level, i.e. the element is a layout
+  // container, not a text leaf. Containers must not get leaf-level
+  // direction overrides.
+  function hasBlockChild(el) {
+    const kids = el.children;
+    for (let i = 0; i < kids.length; i++) {
+      const d = getComputedStyle(kids[i]).display;
+      if (d !== "inline" && d !== "contents" && d.indexOf("inline") !== 0)
+        return true;
+    }
+    return false;
+  }
+
   // Tables follow their own content: a table whose text is RTL-dominant
   // renders fully RTL (first column at the right), an LTR table stays LTR.
   // The decision is computed once on the table container (a real <table> or
@@ -204,13 +239,13 @@
   function tableForce(el, container) {
     container = container || closestTable(el);
     if (!container) {
-      force(el, LTR_TEXT);
+      force(el, "ltr");
       return;
     }
     if (container.__zcodeRtlTableRtl === undefined) {
       container.__zcodeRtlTableRtl = isRtlDominant(container.textContent || "");
     }
-    force(el, container.__zcodeRtlTableRtl ? RTL_TABLE : LTR_TEXT);
+    force(el, container.__zcodeRtlTableRtl ? "table" : "ltrtable");
   }
 
   // Tables fit the pane width instead of overflowing, so long values wrap
@@ -230,18 +265,9 @@
     root = root || document;
     root.querySelectorAll("table").forEach((t) => {
       if (isExcluded(t)) return;
-      force(t, {
-        width: "100%",
-        "min-width": "0",
-        "table-layout": "auto",
-        "white-space": "normal",
-      });
+      force(t, "fit");
       t.querySelectorAll("td,th").forEach((c) => {
-        force(c, {
-          "white-space": "normal",
-          "overflow-wrap": "anywhere",
-          "word-break": "normal",
-        });
+        force(c, "cell");
       });
       // The wrappers around the table keep native LTR so nothing re-flips.
       let anc = t.parentElement,
@@ -251,7 +277,7 @@
         const ox = s.overflowX;
         if (ox.indexOf("auto") >= 0 || ox.indexOf("scroll") >= 0) {
           markPaneChain(anc, t);
-          force(anc, { direction: "ltr" });
+          force(anc, "pane");
           anc.scrollLeft = 0; // fitted table: nothing off-pane to scroll to
           break;
         }
@@ -277,24 +303,24 @@
     // table's RTL text, so the generic rule would rtl them on every
     // pass and break the pane scroll coordinates.
     if (el.__zcodeRtlPaneChain) {
-      force(el, { direction: "ltr" });
+      force(el, "pane");
       const kids = el.children;
       for (let i = 0; i < kids.length; i++) processEl(kids[i]);
       return;
     }
     if (isCode(el)) {
-      force(el, LTR_TEXT);
+      force(el, "ltr");
       return;
     }
     // Tool block zone root: pinned LTR/left so the block never mirrors.
     if (el.matches && el.matches(TOOL_ZONE)) {
-      force(el, { direction: "ltr", "text-align": "left" });
+      force(el, "zone");
       const kids = el.children;
       for (let i = 0; i < kids.length; i++) processEl(kids[i]);
       return;
     }
     if (el.closest && el.closest(TOOL_MARK)) {
-      force(el, LTR_TEXT);
+      force(el, "ltr");
       return;
     }
 
@@ -340,7 +366,7 @@
       // still Latin-dominant (below the 20% threshold) must not inherit
       // rtl either.
       if (!isRtlDominant(text)) {
-        force(el, LTR_TEXT);
+        force(el, "ltr");
         // Descend anyway: children may still be RTL (a Persian quote in
         // English prose, mixed chat wrappers) and must get their own
         // decision instead of keeping stale styles from an earlier pass.
@@ -349,14 +375,14 @@
       } else if (tag === "ul" || tag === "ol") {
         // RTL or mixed list: goes RTL so CSS-generated markers/numbers
         // land on the right.
-        force(el, RTL_LIST);
+        force(el, "list");
       } else if (tag === "li") {
-        force(el, RTL_FORCE);
+        force(el, "rtl");
       } else if (!isLayout) {
         // Core rule: RTL by ratio, but never on an element that contains the
         // sidebar (layout wrapper): flipping those reorders the whole app
         // layout.
-        if (!containsExcluded(el)) force(el, RTL_FORCE);
+        if (!containsExcluded(el)) force(el, "rtl");
       }
     }
 
@@ -402,13 +428,10 @@
       ) {
         // Pin direction ltr too: rows inherit rtl from an RTL message,
         // and in an rtl flex container flex-end is the physical LEFT.
-        force(row, { "justify-content": "flex-end", direction: "ltr" });
+        force(row, "row-end");
       }
       const b = bubbleOf(row);
-      if (b) {
-        b.style.setProperty("margin-left", "auto", "important");
-        b.style.setProperty("margin-right", "0", "important");
-      }
+      if (b) force(b, "pin-right");
       // Edit mode: while a user message is being edited the bubble is
       // replaced by an editor box that bubbleOf() cannot identify. Climb
       // from the row's textarea/contenteditable up to the row's direct
@@ -419,19 +442,11 @@
       if (field && !field.__zcodeRtlInputPinned) {
         let n = field;
         while (n && n !== row) {
-          if (n.parentElement === row) {
-            n.style.setProperty("margin-left", "auto", "important");
-            n.style.setProperty("margin-right", "0", "important");
-          }
-          // editor chrome stays LTR; text dir is per-field
-          force(n, { direction: "ltr" });
+          // margins only on the row's direct child, direction on all
+          force(n, n.parentElement === row ? "edit-box" : "ltr");
           n = n.parentElement;
         }
-        force(field, {
-          direction: "auto",
-          "text-align": "start",
-          "unicode-bidi": "plaintext",
-        });
+        force(field, "neutral");
         field.__zcodeRtlInputPinned = true;
       }
     });
@@ -443,13 +458,10 @@
         getComputedStyle(row).flexDirection !== "column" &&
         getComputedStyle(row).flexDirection !== "column-reverse"
       ) {
-        force(row, { "justify-content": "flex-start", direction: "ltr" });
+        force(row, "row-start");
       }
       const b = bubbleOf(row);
-      if (b) {
-        b.style.setProperty("margin-right", "auto", "important");
-        b.style.setProperty("margin-left", "0", "important");
-      }
+      if (b) force(b, "pin-left");
     });
   }
 
@@ -466,11 +478,7 @@
         const cs = getComputedStyle(d);
         if (cs.display.indexOf("flex") < 0 || cs.flexDirection !== "row")
           return;
-        d.style.setProperty("direction", "ltr", "important");
-        d.style.setProperty("justify-content", "flex-end", "important");
-        d.style.setProperty("margin-left", "auto", "important");
-        d.style.setProperty("margin-right", "0", "important");
-        d.style.setProperty("align-self", "flex-end", "important");
+        force(d, "actions");
       });
     });
   }
@@ -490,31 +498,30 @@
         'textarea,input,[contenteditable="true"],[contenteditable=""]',
       )
       .forEach((e) => {
-        if (!isExcluded(e)) force(e, NEUTRAL);
+        if (!isExcluded(e)) force(e, "neutral");
       });
     root.querySelectorAll('pre,code,[class*="code" i]').forEach((e) => {
       const t = (e.tagName || "").toLowerCase();
       if (t !== "pre" && t !== "code" && !hasPlainToken(e, /code/i)) return;
-      if (!isExcluded(e)) force(e, LTR_TEXT);
+      if (!isExcluded(e)) force(e, "ltr");
     });
   }
 
   function process(root) {
     root = root || document;
-    force(root.documentElement || document.documentElement, {
-      direction: "ltr",
-    });
-    force(root.body || document.body, { direction: "ltr" });
+    ensureStyle();
+    force(root.documentElement || document.documentElement, "ltr");
+    force(root.body || document.body, "ltr");
     processMessages(root);
     fixBubbleSides(root);
     fixUserActions(root);
     fixTableScroll(root);
     fixToolBlocks(root);
-    // Repair: an earlier pass may have put inline rtl/right on layout
-    // wrappers that contain the sidebar while sitting outside the chat
-    // scope. That reorders the app layout and its text-align:right keeps
-    // inheriting into the excluded sidebar. Reset those; chat-scoped rtl is
-    // legit and untouched.
+    // Repair: an earlier pass may have put rtl/right on layout wrappers
+    // that contain the sidebar while sitting outside the chat scope. That
+    // reorders the app layout and its text-align:right keeps inheriting
+    // into the excluded sidebar. Reset those; chat-scoped rtl is legit and
+    // untouched.
     root
       .querySelectorAll(
         '[style*="direction: rtl"],' +
@@ -525,13 +532,7 @@
       .forEach((el) => {
         if (isExcluded(el)) return;
         if (el.closest && el.closest(MSG_SEL)) return;
-        if (containsExcluded(el)) {
-          force(el, {
-            direction: "ltr",
-            "text-align": "left",
-            "unicode-bidi": "normal",
-          });
-        }
+        if (containsExcluded(el)) force(el, "reset");
       });
   }
 
@@ -540,6 +541,7 @@
   // injections are safe: process() is idempotent and the observer is
   // guarded by window.__zcodeRtlObserver.
   function start() {
+    ensureStyle();
     process(document);
 
     // Always re-check after streaming mutations: decisions made on partial
@@ -588,7 +590,8 @@
   }
 
   // Persistent on/off switch. '0' in localStorage disables the layer;
-  // disabling strips exactly the styles this payload set, with no reload.
+  // disabling removes the stylesheet and every data attribute, with no
+  // reload.
   const LS_KEY = "zcodeRtl:enabled";
   function rtlEnabled() {
     try {
@@ -598,10 +601,11 @@
     }
   }
   function stripAll() {
-    for (const [el, props] of TOUCHED) {
+    const tag = document.getElementById(STYLE_ID);
+    if (tag && tag.parentNode) tag.parentNode.removeChild(tag);
+    for (const el of TOUCHED) {
       try {
-        for (const k of props) el.style.removeProperty(k);
-        if (el.style && el.style.length === 0) el.removeAttribute("style");
+        el.removeAttribute(ATTR);
       } catch (e) {
         /* detached node, ignore */
       }

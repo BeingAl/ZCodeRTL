@@ -1,6 +1,9 @@
 # Local tool state (at any depth)
 **/.mimosa/
 
+# ZCode workspace-local plugin state (at any depth)
+.zcode/
+
 # Dependencies
 node_modules/
 
