@@ -1,9 +1,6 @@
 # Local tool state (at any depth)
 **/.mimosa/
 
-# Local environment config (at any depth)
-.env
-
 # Dependencies
 node_modules/
 
