@@ -1,0 +1,9 @@
+{
+  "name": "zcode-rtl",
+  "version": "1.0.0",
+  "description": "Automatic RTL/LTR text direction for the ZCode Desktop chat UI. RTL text renders correctly while code stays LTR. Injected over the local Chromium debug port. No app file is modified.",
+  "author": {
+    "name": "BeingAl"
+  },
+  "commands": "commands"
+}
