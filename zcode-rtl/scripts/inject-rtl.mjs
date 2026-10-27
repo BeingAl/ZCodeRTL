@@ -10,7 +10,7 @@
  * Modes:
  *   (no args)  one-shot: inject into every page target, then exit
  *   --set on   enable the RTL layer live (no app restart)
- *   --set off  disable the RTL layer live (styles stripped, no reload)
+ *   --set off  disable the RTL layer live and stop the heartbeat daemon
  *   --quiet    suppress output when the debug port is closed (hook use)
  *
  * Both --set modes also record the intent in ~/.zcode/rtl-switch, which the
@@ -26,12 +26,14 @@
  * fetch).
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { getPort } from "./env.mjs";
 
 const PORT = getPort();
+const IS_WIN = process.platform === "win32";
 const BASE = `http://127.0.0.1:${PORT}`;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PAYLOAD_PATH = join(HERE, "..", "assets", "zcode-rtl.js");
@@ -47,6 +49,47 @@ function setSwitch(v) {
     writeFileSync(SWITCH_PATH, v, "utf8");
   } catch {
     /* best effort */
+  }
+}
+
+// A full off leaves nothing running: stop this plugin's heartbeat
+// daemons too. Chrome or Chromium are never touched on purpose: the
+// plugin never launches a browser, and killing browser processes by
+// name could hit the user's own.
+function killDaemons() {
+  const marker = join(HERE, "heartbeat.mjs");
+  try {
+    if (IS_WIN) {
+      const ps =
+        "Get-CimInstance Win32_Process | Where-Object { " +
+        "$_.CommandLine -like '*heartbeat.mjs*' -and " +
+        "$_.CommandLine -like '*--daemon*' } | " +
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }";
+      spawnSync("powershell", ["-NoProfile", "-Command", ps], {
+        windowsHide: true,
+        timeout: 10000,
+      });
+      return;
+    }
+    const out = spawnSync("pgrep", ["-f", marker], {
+      windowsHide: true,
+      timeout: 5000,
+    });
+    for (const pid of (out.stdout || "")
+      .toString()
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      if (Number(pid) !== process.pid) {
+        try {
+          process.kill(Number(pid), "SIGTERM");
+        } catch {
+          /* gone */
+        }
+      }
+    }
+  } catch {
+    /* pgrep missing or nothing to kill */
   }
 }
 
@@ -172,8 +215,10 @@ async function evalIn(t, expr) {
 
 async function setLayer(what) {
   // Record the intent first, so it survives even when the port is closed
-  // and the injection itself cannot run yet.
+  // and the injection itself cannot run yet. An off also stops the
+  // heartbeat daemon, so nothing of this plugin keeps running.
   setSwitch(what === "off" ? "0" : "1");
+  if (what === "off") killDaemons();
   let targets;
   try {
     targets = await listTargets();

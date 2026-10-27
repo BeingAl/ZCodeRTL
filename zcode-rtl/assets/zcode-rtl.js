@@ -162,13 +162,47 @@
     return false;
   }
 
+  // True when one of the element's plain class tokens matches re. Tailwind
+  // arbitrary properties and values always carry a bracket somewhere in the
+  // token ([--markdown-table-gutter:...], even variant-prefixed like
+  // max-md:[--markdown-table-layout-left-inset:8px]) and on app 3.16.x the
+  // chat scroll pane carries them: a greedy [class*="table"] match treats
+  // every chat message as a table cell and forces all RTL text back to LTR.
+  function hasPlainToken(el, re) {
+    const cls = (el.className || "").toString();
+    if (!cls) return false;
+    return cls.split(/\s+/).some((t) => t && !t.includes("[") && re.test(t));
+  }
+
+  // The table scope of an element: a real table element, or a div-based
+  // grid wrapper whose class token says "table".
+  function closestTable(el) {
+    let n = el;
+    while (n) {
+      const t = (n.tagName || "").toLowerCase();
+      if (
+        t === "table" ||
+        t === "thead" ||
+        t === "tbody" ||
+        t === "tr" ||
+        t === "td" ||
+        t === "th"
+      ) {
+        return n;
+      }
+      if (hasPlainToken(n, /table/i)) return n;
+      n = n.parentElement;
+    }
+    return null;
+  }
+
   // Tables follow their own content: a table whose text is RTL-dominant
   // renders fully RTL (first column at the right), an LTR table stays LTR.
   // The decision is computed once on the table container (a real <table> or
   // a div-based grid) and cached, so every part of one table gets the same
   // direction and Latin-valued cells stay aligned like their neighbors.
-  function tableForce(el) {
-    const container = el.closest && el.closest('table,[class*="table" i]');
+  function tableForce(el, container) {
+    container = container || closestTable(el);
     if (!container) {
       force(el, LTR_TEXT);
       return;
@@ -292,10 +326,10 @@
     // the td branch never fires. Apply the same per-cell rule to any
     // near-leaf element inside a table scope, again before the content
     // rules below so Latin-valued pseudo-cells keep their table direction.
-    const inTable =
-      !isLayout && el.closest && el.closest('table,[class*="table" i]');
+    const tableScope = closestTable(el);
+    const inTable = !isLayout && !!tableScope;
     if (inTable && !hasBlockChild(el)) {
-      tableForce(el);
+      tableForce(el, tableScope);
     } else {
       // Latin-only and Latin-dominant text gets an EXPLICIT ltr. This is
       // the critical rule: `direction: auto` is not a valid CSS value on
@@ -307,9 +341,12 @@
       // rtl either.
       if (!isRtlDominant(text)) {
         force(el, LTR_TEXT);
-        return;
-      }
-      if (tag === "ul" || tag === "ol") {
+        // Descend anyway: children may still be RTL (a Persian quote in
+        // English prose, mixed chat wrappers) and must get their own
+        // decision instead of keeping stale styles from an earlier pass.
+        // Without this, one Latin-dominant wrapper above the transcript
+        // froze every existing message at whatever an older pass had set.
+      } else if (tag === "ul" || tag === "ol") {
         // RTL or mixed list: goes RTL so CSS-generated markers/numbers
         // land on the right.
         force(el, RTL_LIST);
@@ -456,6 +493,8 @@
         if (!isExcluded(e)) force(e, NEUTRAL);
       });
     root.querySelectorAll('pre,code,[class*="code" i]').forEach((e) => {
+      const t = (e.tagName || "").toLowerCase();
+      if (t !== "pre" && t !== "code" && !hasPlainToken(e, /code/i)) return;
       if (!isExcluded(e)) force(e, LTR_TEXT);
     });
   }

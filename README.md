@@ -105,7 +105,8 @@ Both commands return immediately and a detached background copy does
 the work. On the first `/rtl on` the debug port is still closed, so
 ZCode restarts once with the port and RTL comes back on by itself.
 `/rtl off` strips the layer, closes the port with one app restart,
-and leaves the app in the default state where nothing listens.
+stops the background watcher, and leaves the app in the default
+state where nothing listens.
 
 The switch is stored in `localStorage["zcodeRtl:enabled"]` and applied
 by an in-page function, so it survives page reloads. An app restart is
@@ -115,7 +116,8 @@ that flag at process start.
 The Plugin Management toggle acts as a live switch too: a background
 heartbeat, started by the SessionStart hook, applies the layer when
 you enable the plugin and strips it and closes the port when you
-disable it.
+disable it. Turning off also stops the heartbeat itself, so nothing
+keeps running; the next session start brings the watcher back.
 
 ## Notes
 

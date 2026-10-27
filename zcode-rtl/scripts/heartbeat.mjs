@@ -7,8 +7,9 @@
  * ~/.zcode/cli/config.json. No process restarts and no renderer reload
  * happens, so this daemon watches that file and reconciles the running app:
  *
- *   toggle OFF (edge) -> strip the RTL layer live, then close the debug
- *                        port (one app restart, back to the default state)
+ *   toggle OFF (edge) -> strip the RTL layer live, close the debug
+ *                        port (one app restart) and exit, so nothing
+ *                        is left running while the plugin is off
  *   toggle ON  (edge) -> open the debug port if needed (one app restart)
  *                        and enable the RTL layer
  *   between edges     -> respect the manual switch written by /rtl:
@@ -310,6 +311,12 @@ async function tick() {
       log("toggle off -> stripping RTL layer and closing the debug port");
       lastClose = Date.now();
       run(process.execPath, [RESTART, "--without-port"]);
+    }
+    if (edge) {
+      // The plugin is off: leave nothing running. The SessionStart hook
+      // starts this daemon again when a session or the plugin comes back.
+      log("plugin disabled -> daemon exits");
+      process.exit(0);
     }
     lastEnabled = enabled;
     return;
